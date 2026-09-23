@@ -1,0 +1,41 @@
+# Modo REAL — BLOQUEADO (MASTER_SPEC seção 3.3, 72; SECURITY_MODEL seção 2.2).
+#
+# execution.enabled NUNCA deve ser alterado automaticamente por um agente.
+# Alterar este arquivo exige revisão humana explícita e aprovação registrada
+# em promotion_requests. A configuração atual reprova qualquer execução.
+mode: REAL
+
+execution:
+  enabled: false
+
+real:
+  enabled: false
+
+human_approval:
+  required: true
+
+kill_switch:
+  enabled: true
+
+capital_scenarios:
+  - 100
+  - 300
+  - 500
+  - 700
+  - 1000
+
+validation:
+  min_fold_pass_ratio: 1.0
+  min_sample_size: 200
+  walk_forward_folds: 5
+  monte_carlo_runs: 1000
+
+research:
+  max_experiments_per_cycle: 10
+  max_retries_per_agent: 3
+  max_parameter_variations: 24
+
+risk:
+  risk_per_trade: 0.01
+  max_drawdown_limit: 0.15
+  max_risk_of_ruin: 0.01
