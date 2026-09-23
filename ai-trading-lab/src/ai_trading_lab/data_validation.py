@@ -39,6 +39,10 @@ def _raw_payload(point: RawPricePoint) -> dict[str, object]:
         "timestamp": point.timestamp.isoformat(),
         "price": point.price,
         "source": point.source,
+        "origin": point.origin.value,
+        "open": point.open,
+        "high": point.high,
+        "low": point.low,
     }
 
 
@@ -65,15 +69,16 @@ def validate_and_normalize(
     rejections: list[RejectedRecord] = []
     accepted_raw: list[RawPricePoint] = []
 
-    series_key: tuple[str, str, str] | None = None
+    series_key: tuple[str, str, str, str] | None = None
     for point in points:
-        key = (point.broker, point.asset, point.timeframe)
+        key = (point.broker, point.asset, point.timeframe, point.origin.value)
         if series_key is None:
             series_key = key
         elif key != series_key:
             rejections.append(
                 _reject(
-                    "mixed_series: ponto pertence a broker/asset/timeframe diferente do lote",
+                    "mixed_series: ponto divergente em broker/asset/timeframe/origin "
+                    "em relação ao lote",
                     point,
                 )
             )
@@ -85,6 +90,11 @@ def validate_and_normalize(
 
         if not _is_finite_positive(point.price):
             rejections.append(_reject("invalid_price: preço não finito ou não positivo", point))
+            continue
+
+        ohlc_error = _validate_ohlc(point)
+        if ohlc_error is not None:
+            rejections.append(_reject(ohlc_error, point))
             continue
 
         delta_seconds = (point.timestamp - reference_now).total_seconds()
@@ -121,6 +131,39 @@ def validate_and_normalize(
 
 def _is_finite_positive(price: float) -> bool:
     return price == price and price not in (float("inf"), float("-inf")) and price > 0
+
+
+def _validate_ohlc(point: RawPricePoint) -> str | None:
+    """Valida coerência de OHLC quando presente. Não corrige nem completa nada."""
+    provided = {
+        "open": point.open,
+        "high": point.high,
+        "low": point.low,
+    }
+    present = {name: value for name, value in provided.items() if value is not None}
+    if not present:
+        return None
+
+    for name, value in present.items():
+        if not _is_finite_positive(value):
+            return f"invalid_ohlc: {name} não finito ou não positivo"
+
+    high = point.high
+    low = point.low
+    if high is not None and low is not None and high < low:
+        return "invalid_ohlc: high menor que low"
+
+    close = point.price
+    if high is not None and close > high:
+        return "invalid_ohlc: close acima do high"
+    if low is not None and close < low:
+        return "invalid_ohlc: close abaixo do low"
+    if point.open is not None:
+        if high is not None and point.open > high:
+            return "invalid_ohlc: open acima do high"
+        if low is not None and point.open < low:
+            return "invalid_ohlc: open abaixo do low"
+    return None
 
 
 def _reject_out_of_order(
@@ -199,4 +242,8 @@ def _normalize_to_utc(point: RawPricePoint) -> ValidatedPricePoint:
         timestamp=point.timestamp.astimezone(UTC),
         price=point.price,
         source=point.source,
+        origin=point.origin,
+        open=point.open,
+        high=point.high,
+        low=point.low,
     )

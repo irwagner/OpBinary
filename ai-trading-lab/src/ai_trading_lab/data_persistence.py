@@ -13,7 +13,13 @@ from datetime import datetime
 from pathlib import Path
 from threading import RLock
 
-from .data_models import DatasetStage, DatasetVersion, QualityReport, ValidatedPricePoint
+from .data_models import (
+    DataOrigin,
+    DatasetStage,
+    DatasetVersion,
+    QualityReport,
+    ValidatedPricePoint,
+)
 from .errors import DatasetVersionError, PersistenceError
 from .logging import sanitize
 
@@ -91,8 +97,8 @@ class DatasetStore:
                     INSERT INTO dataset_versions(
                         dataset_id, version, content_hash, broker, asset,
                         timeframe, stage, point_count, coverage_start,
-                        coverage_end, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        coverage_end, origin, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         version.dataset_id,
@@ -105,6 +111,7 @@ class DatasetStore:
                         version.point_count,
                         version.coverage_start.isoformat(),
                         version.coverage_end.isoformat(),
+                        version.origin.value,
                         version.created_at.isoformat(),
                     ),
                 )
@@ -113,8 +120,9 @@ class DatasetStore:
                         """
                         INSERT INTO dataset_points(
                             dataset_id, version, broker, asset, timeframe,
-                            timestamp, price, source
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            timestamp, price, source, origin,
+                            open_price, high_price, low_price
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             version.dataset_id,
@@ -125,6 +133,10 @@ class DatasetStore:
                             point.timestamp.isoformat(),
                             point.price,
                             point.source,
+                            point.origin.value,
+                            point.open,
+                            point.high,
+                            point.low,
                         ),
                     )
                 connection.execute(
@@ -221,6 +233,7 @@ class DatasetStore:
                     point_count INTEGER NOT NULL,
                     coverage_start TEXT NOT NULL,
                     coverage_end TEXT NOT NULL,
+                    origin TEXT NOT NULL DEFAULT 'BROKER_OTC',
                     created_at TEXT NOT NULL,
                     PRIMARY KEY (dataset_id, version)
                 );
@@ -234,6 +247,10 @@ class DatasetStore:
                     timestamp TEXT NOT NULL,
                     price REAL NOT NULL,
                     source TEXT NOT NULL,
+                    origin TEXT NOT NULL DEFAULT 'BROKER_OTC',
+                    open_price REAL,
+                    high_price REAL,
+                    low_price REAL,
                     FOREIGN KEY (dataset_id, version)
                         REFERENCES dataset_versions(dataset_id, version)
                 );
@@ -254,6 +271,7 @@ class DatasetStore:
                 );
                 """
             )
+            _apply_column_migrations(connection)
             # Recriados a cada inicialização para que um banco antigo nunca
             # fique com uma versão desatualizada das barreiras append-only.
             connection.executescript(_DATASET_GUARD_TRIGGERS)
@@ -291,6 +309,33 @@ class _Transaction:
                 self._connection.rollback()
         finally:
             self._lock.release()
+
+
+_COLUMN_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
+    # (tabela, coluna, DDL) — aplicadas apenas se a coluna estiver ausente.
+    ("dataset_versions", "origin", "ALTER TABLE dataset_versions ADD COLUMN origin TEXT NOT NULL DEFAULT 'BROKER_OTC'"),
+    ("dataset_points", "origin", "ALTER TABLE dataset_points ADD COLUMN origin TEXT NOT NULL DEFAULT 'BROKER_OTC'"),
+    ("dataset_points", "open_price", "ALTER TABLE dataset_points ADD COLUMN open_price REAL"),
+    ("dataset_points", "high_price", "ALTER TABLE dataset_points ADD COLUMN high_price REAL"),
+    ("dataset_points", "low_price", "ALTER TABLE dataset_points ADD COLUMN low_price REAL"),
+)
+
+
+def _apply_column_migrations(connection: sqlite3.Connection) -> None:
+    """Adiciona colunas novas a bancos criados por versões anteriores.
+
+    Migração aditiva apenas: nunca remove nem reescreve dado existente. Registros
+    antigos recebem o default declarado, preservando o histórico.
+    """
+    for table, column, ddl in _COLUMN_MIGRATIONS:
+        existing = {
+            row["name"]
+            for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        if not existing:
+            continue
+        if column not in existing:
+            connection.execute(ddl)
 
 
 def _gaps_to_json(report: QualityReport) -> list[dict[str, object]]:
@@ -344,6 +389,7 @@ def _version_from_row(row: sqlite3.Row) -> DatasetVersion:
         point_count=row["point_count"],
         coverage_start=_parse_timestamp(row["coverage_start"]),
         coverage_end=_parse_timestamp(row["coverage_end"]),
+        origin=DataOrigin(row["origin"]),
         created_at=_parse_timestamp(row["created_at"]),
     )
 
@@ -356,6 +402,10 @@ def _point_from_row(row: sqlite3.Row) -> ValidatedPricePoint:
         timestamp=_parse_timestamp(row["timestamp"]),
         price=row["price"],
         source=row["source"],
+        origin=DataOrigin(row["origin"]),
+        open=row["open_price"],
+        high=row["high_price"],
+        low=row["low_price"],
     )
 
 

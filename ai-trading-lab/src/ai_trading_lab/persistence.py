@@ -473,6 +473,30 @@ class SQLiteStore:
         except sqlite3.DatabaseError as error:
             raise PersistenceError("falha ao decidir solicitação de promoção") from error
 
+    def latest_strategy_sequence(self) -> int:
+        """Maior sequência de strategy_id já persistida, ou 0 se não houver.
+
+        Permite retomar a numeração após restart sem colidir com IDs existentes.
+        """
+        return self._max_sequence(
+            "SELECT MAX(CAST(SUBSTR(strategy_id, 5) AS INTEGER)) AS seq "
+            "FROM strategy_state WHERE strategy_id LIKE 'HYP-%'"
+        )
+
+    def latest_experiment_sequence(self) -> int:
+        """Maior sequência de experiment_id já persistida, ou 0 se não houver."""
+        return self._max_sequence(
+            "SELECT MAX(CAST(SUBSTR(experiment_id, 5) AS INTEGER)) AS seq "
+            "FROM experiments WHERE experiment_id LIKE 'EXP-%'"
+        )
+
+    def _max_sequence(self, query: str) -> int:
+        with self._lock:
+            row = self._connection.execute(query).fetchone()
+        if row is None or row["seq"] is None:
+            return 0
+        return int(row["seq"])
+
     def has_approved_promotion(self, strategy_id: str) -> bool:
         """Verifica aprovação humana persistida para uma estratégia."""
         with self._lock:

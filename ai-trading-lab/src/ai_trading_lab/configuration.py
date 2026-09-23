@@ -58,6 +58,17 @@ class RiskConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class BrokerRiskConfig:
+    """Gate de risco de contraparte (ADR-007).
+
+    Em DEMO não há capital em risco, então o gate é informativo por padrão.
+    Continua obrigatório em REAL, onde o risco de saque se materializa.
+    """
+
+    blocking: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class SystemConfig:
     mode: SystemMode
     execution: ExecutionConfig
@@ -67,6 +78,7 @@ class SystemConfig:
     research: ResearchConfig = ResearchConfig()
     risk: RiskConfig = RiskConfig()
     real: RealBarrierConfig = RealBarrierConfig()
+    broker_risk: BrokerRiskConfig = BrokerRiskConfig()
 
     @property
     def execution_allowed(self) -> bool:
@@ -109,6 +121,9 @@ def load_system_config(raw: Mapping[str, object]) -> SystemConfig:
         research=_read_research(raw),
         risk=_read_risk(raw),
         real=RealBarrierConfig(enabled=_read_bool(raw, "real", "enabled", False)),
+        broker_risk=BrokerRiskConfig(
+            blocking=_read_bool(raw, "broker_risk", "blocking", False)
+        ),
     )
     _validate_safety(config)
     return config
@@ -209,6 +224,10 @@ def _validate_safety(config: SystemConfig) -> None:
         if not config.security.human_approval_required:
             raise ConfigurationError("DEMO exige aprovação humana configurada")
     if config.mode is SystemMode.REAL:
+        if not config.broker_risk.blocking:
+            raise ConfigurationError(
+                "REAL exige broker_risk.blocking habilitado (ADR-007)"
+            )
         if config.execution.enabled:
             raise ConfigurationError("REAL permanece bloqueado nesta fase")
         if not config.security.human_approval_required:

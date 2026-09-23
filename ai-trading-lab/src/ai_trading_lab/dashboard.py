@@ -113,7 +113,7 @@ def render_dataset_screen(dataset_store: DatasetStore, dataset_ids: tuple[str, .
             lines.append(
                 f"{version.dataset_id} v{version.version} [{version.stage.value}] "
                 f"{version.point_count} pts "
-                f"{version.coverage_start.isoformat()} → {version.coverage_end.isoformat()} "
+                f"{version.coverage_start.isoformat()} -> {version.coverage_end.isoformat()} "
                 f"hash={version.content_hash[:12]}"
             )
     return "\n".join(lines)

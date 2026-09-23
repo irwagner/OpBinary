@@ -36,3 +36,8 @@ risk:
   risk_per_trade: 0.02
   max_drawdown_limit: 0.30
   max_risk_of_ruin: 0.05
+
+# ADR-007: em RESEARCH não há capital em risco, então o gate de contraparte
+# é informativo. O relatório continua registrando o que for apurado.
+broker_risk:
+  blocking: false

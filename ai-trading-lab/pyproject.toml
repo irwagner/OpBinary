@@ -7,7 +7,9 @@ name = "ai-trading-lab"
 version = "0.1.0"
 description = "Infraestrutura auditável para pesquisa quantitativa"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "pyyaml>=6.0.3,<7",
+]
 
 [tool.setuptools]
 package-dir = {"" = "src"}

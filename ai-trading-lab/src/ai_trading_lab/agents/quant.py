@@ -8,7 +8,7 @@ Rejeita qualquer hipótese que não seja mensurável. Frases vagas do tipo
 from __future__ import annotations
 
 from ..contracts import FormalStrategy, Hypothesis
-from ..strategy import RuleMode, StrategyRule
+from ..strategy import RuleMode, SignalSource, StrategyRule
 from .base import AuditSink, BaseAgent
 
 _REQUIRED_PARAMETERS = ("lookback", "threshold", "expiry_periods", "mode")
@@ -53,14 +53,21 @@ class QuantAgent(BaseAgent):
                 hypothesis, f"parâmetros obrigatórios ausentes: {sorted(missing)}"
             )
 
+        parameters = hypothesis.parameters
         try:
+            window = parameters.get("hour_window")
             rule = StrategyRule(
-                lookback=int(hypothesis.parameters["lookback"]),
-                threshold=float(hypothesis.parameters["threshold"]),
-                expiry_periods=int(hypothesis.parameters["expiry_periods"]),
-                mode=RuleMode(str(hypothesis.parameters["mode"])),
+                lookback=int(parameters["lookback"]),
+                threshold=float(parameters["threshold"]),
+                expiry_periods=int(parameters["expiry_periods"]),
+                mode=RuleMode(str(parameters["mode"])),
+                signal_source=SignalSource(
+                    str(parameters.get("signal_source", SignalSource.MOMENTUM.value))
+                ),
+                streak_length=int(parameters.get("streak_length", 3)),
+                hour_window=tuple(window) if window else None,  # type: ignore[arg-type]
             )
-        except (TypeError, ValueError) as error:
+        except (TypeError, ValueError, KeyError) as error:
             return self._reject(hypothesis, f"parâmetros inválidos: {error}")
 
         self.record(

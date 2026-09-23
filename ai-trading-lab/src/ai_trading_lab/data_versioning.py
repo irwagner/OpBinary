@@ -28,6 +28,10 @@ def compute_content_hash(points: tuple[ValidatedPricePoint, ...]) -> str:
                 point.timestamp.isoformat(),
                 repr(point.price),
                 point.source,
+                point.origin.value,
+                repr(point.open),
+                repr(point.high),
+                repr(point.low),
             )
         )
         digest.update(row.encode("utf-8"))
@@ -50,9 +54,14 @@ def build_dataset_version(
     brokers = {point.broker for point in points}
     assets = {point.asset for point in points}
     timeframes = {point.timeframe for point in points}
+    origins = {point.origin for point in points}
     if len(brokers) > 1 or len(assets) > 1 or len(timeframes) > 1:
         raise DatasetVersionError(
             "dataset não pode misturar broker/asset/timeframe diferentes em uma versão"
+        )
+    if len(origins) > 1:
+        raise DatasetVersionError(
+            "dataset não pode misturar origens de dado em uma versão (ADR-007)"
         )
 
     timestamps = [point.timestamp for point in points]
@@ -67,5 +76,6 @@ def build_dataset_version(
         point_count=len(points),
         coverage_start=min(timestamps),
         coverage_end=max(timestamps),
+        origin=origins.pop(),
         created_at=datetime.now(UTC),
     )

@@ -36,3 +36,8 @@ risk:
   risk_per_trade: 0.02
   max_drawdown_limit: 0.30
   max_risk_of_ruin: 0.05
+
+# ADR-007: DEMO não envolve depósito, então o gate de contraparte não bloqueia.
+# Se algum dia houver REAL, este valor volta a ser true e a avaliação é refeita.
+broker_risk:
+  blocking: false

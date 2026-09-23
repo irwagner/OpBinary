@@ -39,3 +39,7 @@ risk:
   risk_per_trade: 0.01
   max_drawdown_limit: 0.15
   max_risk_of_ruin: 0.01
+
+# Em REAL o risco de contraparte se materializa: o gate volta a ser obrigatório.
+broker_risk:
+  blocking: true

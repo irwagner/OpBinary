@@ -30,6 +30,23 @@ class DatasetSplitKind(StrEnum):
     TEST = "TEST"
 
 
+class DataOrigin(StrEnum):
+    """Origem declarada do preço (ADR-007). Nunca é inferida nem assumida.
+
+    BROKER_OTC   preço gerado pela própria corretora — sintético e específico
+                 daquela corretora, não comparável entre provedores.
+    MARKET_PROXY dado real de mercado usado como referência.
+    """
+
+    BROKER_OTC = "BROKER_OTC"
+    MARKET_PROXY = "MARKET_PROXY"
+
+    @property
+    def has_high_basis_risk(self) -> bool:
+        """OTC carrega basis risk alto: quem gera o preço é o provedor."""
+        return self is DataOrigin.BROKER_OTC
+
+
 @dataclass(frozen=True, slots=True)
 class RawPricePoint:
     """Ponto de preço bruto, exatamente como recebido da fonte de captura.
@@ -44,6 +61,10 @@ class RawPricePoint:
     timestamp: datetime
     price: float
     source: str = "broker_capture"
+    origin: DataOrigin = DataOrigin.BROKER_OTC
+    open: float | None = None
+    high: float | None = None
+    low: float | None = None
 
     def __post_init__(self) -> None:
         if not self.broker.strip():
@@ -66,12 +87,21 @@ class ValidatedPricePoint:
     timestamp: datetime
     price: float
     source: str
+    origin: DataOrigin = DataOrigin.BROKER_OTC
+    open: float | None = None
+    high: float | None = None
+    low: float | None = None
 
     def __post_init__(self) -> None:
         if self.timestamp.tzinfo is None:
             raise ValueError("timestamp deve ser timezone-aware")
         if self.timestamp.utcoffset() != UTC.utcoffset(self.timestamp):
             raise ValueError("timestamp validado deve estar normalizado em UTC")
+
+    @property
+    def has_ohlc(self) -> bool:
+        """Indica se a vela tem abertura registrada, permitindo cor exata."""
+        return self.open is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,7 +170,13 @@ class DatasetVersion:
     point_count: int
     coverage_start: datetime
     coverage_end: datetime
+    origin: DataOrigin = DataOrigin.BROKER_OTC
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+    @property
+    def basis_risk_high(self) -> bool:
+        """Informativo: delimita o escopo da conclusão, não bloqueia (ADR-007)."""
+        return self.origin.has_high_basis_risk
 
 
 @dataclass(frozen=True, slots=True)

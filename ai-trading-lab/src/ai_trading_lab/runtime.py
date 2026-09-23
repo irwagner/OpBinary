@@ -19,7 +19,11 @@ from .agents.backtester import BacktesterAgent
 from .agents.broker_risk import BrokerIntelligenceSource, BrokerRiskAgent
 from .agents.quant import QuantAgent
 from .agents.reporter import ReporterAgent
-from .agents.researcher import ResearcherAgent, signature_of
+from .agents.researcher import (
+    ResearcherAgent,
+    required_expectancy_margin,
+    signature_of,
+)
 from .agents.risk import RiskAgent
 from .agents.statistician import StatisticianAgent
 from .agents.supervisor import SupervisorAgent
@@ -36,7 +40,7 @@ from .errors import TradingLabError
 from .health import HealthReport, ReadinessState, run_health_check
 from .agents.researcher import RuleSignature
 from .identifiers import ExperimentIdGenerator, StrategyIdGenerator
-from .models import Actor, ActorRole, StrategyStatus, SystemStatus
+from .models import Actor, ActorRole, Experiment, StrategyStatus, SystemStatus
 from .persistence import SQLiteStore
 from .state import StateManager, StrategyStateManager
 
@@ -72,6 +76,7 @@ class ResearchRuntime:
         self._config = config
         self._store = store
         self._datasets = dataset_store
+        self._software_version = software_version
         self._system_state = StateManager(store)
         self._strategy_states = StrategyStateManager(store)
 
@@ -86,7 +91,17 @@ class ResearchRuntime:
         self._validator = ValidatorAgent(self._strategy_states, software_version, store)
         self._reporter = ReporterAgent(software_version, store)
 
-        self._experiment_ids = experiment_ids or ExperimentIdGenerator()
+        # Retoma a numeração a partir do que já existe no banco, para não
+        # colidir com IDs de ciclos anteriores após um restart.
+        self._experiment_ids = experiment_ids or ExperimentIdGenerator(
+            store.latest_experiment_sequence()
+        )
+        if strategy_ids is None:
+            self._researcher = ResearcherAgent(
+                software_version,
+                store,
+                StrategyIdGenerator(store.latest_strategy_sequence()),
+            )
         self._supervisor_actor = Actor("supervisor-runtime", ActorRole.SUPERVISOR)
         self._validator_actor = Actor("validator-runtime", ActorRole.VALIDATOR)
         self._tried_signatures: set[RuleSignature] = set()
@@ -107,9 +122,14 @@ class ResearchRuntime:
         *,
         payout: float,
         cycle_index: int = 1,
-        require_broker_risk: bool = False,
+        require_broker_risk: bool | None = None,
     ) -> CycleOutcome:
-        """Executa um ciclo completo sobre a última versão de um dataset."""
+        """Executa um ciclo completo sobre a última versão de um dataset.
+
+        `require_broker_risk` segue a configuração (ADR-007) quando omitido.
+        """
+        if require_broker_risk is None:
+            require_broker_risk = self._config.broker_risk.blocking
         health = self.health((dataset_id,))
         if health.readiness is not ReadinessState.READY:
             return CycleOutcome(
@@ -200,6 +220,19 @@ class ResearchRuntime:
     ) -> None:
         self._tried_signatures.add(signature_of(dict(hypothesis.parameters)))
         experiment_id = self._experiment_ids.next_id()
+
+        # Experimento é registrado antes de qualquer resultado e nunca
+        # sobrescrito depois (MASTER_SPEC seção 21).
+        self._store.append_experiment(
+            Experiment(
+                experiment_id=experiment_id,
+                strategy_id=hypothesis.strategy_id,
+                dataset_id=f"{dataset.dataset_id}@v{dataset.version}",
+                software_version=self._software_version,
+                agent_version=self._researcher.version,
+                parameters=dict(hypothesis.parameters),
+            )
+        )
 
         self._strategy_states.initialize(
             hypothesis.strategy_id, actor=self._supervisor_actor, reason="hipótese registrada"
@@ -293,6 +326,7 @@ class ResearchRuntime:
             broker_report,
             self._config.validation,
             self._config.risk,
+            expectancy_margin=required_expectancy_margin(len(self._tried_signatures)),
         )
         decision = self._validator.decide(
             hypothesis.strategy_id,

@@ -53,20 +53,23 @@ secrets.*
 credentials.*
 
 # ---- Artefatos de runtime do projeto ----
-logs/*
-!logs/.gitkeep
-data/raw/*
-!data/raw/.gitkeep
-data/processed/*
-!data/processed/.gitkeep
-data/validated/*
-!data/validated/.gitkeep
-data/datasets/*
-!data/datasets/.gitkeep
-backtests/runs/*
-!backtests/runs/.gitkeep
-backtests/reports/*
-!backtests/reports/.gitkeep
+# Padroes com ** para valerem tambem dentro de ai-trading-lab/
+**/logs/*
+!**/logs/.gitkeep
+**/data/raw/*
+!**/data/raw/.gitkeep
+# Amostras de dados sinteticos versionadas de proposito (uteis em outra maquina)
+!**/data/raw/amostra_*.csv
+**/data/processed/*
+!**/data/processed/.gitkeep
+**/data/validated/*
+!**/data/validated/.gitkeep
+**/data/datasets/*
+!**/data/datasets/.gitkeep
+**/backtests/runs/*
+!**/backtests/runs/.gitkeep
+**/backtests/reports/*
+!**/backtests/reports/.gitkeep
 *.sqlite
 *.sqlite3
 *.db

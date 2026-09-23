@@ -97,7 +97,17 @@ class ReporterAgent(BaseAgent):
                 "",
                 f"Decision:    {decision.previous_state} -> {decision.new_state}",
                 f"Reason:      {decision.reason}",
-                f"Checklist:   {'completo' if not failed else 'reprovado em ' + ', '.join(failed)}",
+            ]
+        )
+        if failed:
+            lines.append(
+                "Checklist:   itens reprovados (o motivo acima lista os que "
+                f"determinaram a decisão): {', '.join(failed)}"
+            )
+        else:
+            lines.append("Checklist:   completo")
+        lines.extend(
+            [
                 "",
                 "Aviso: resultados históricos ou de DEMO não garantem resultados futuros.",
             ]

@@ -25,6 +25,9 @@ from .dashboard import (
     render_health_screen,
     render_main_screen,
 )
+from .data_import import FileMarketDataSource
+from .data_ingestion import ingest_raw_batch
+from .data_models import DataOrigin
 from .data_persistence import DatasetStore
 from .errors import TradingLabError
 from .logging import configure_structured_logger, log_event
@@ -46,6 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=(
             "status",
             "agents",
+            "import",
             "cycle",
             "stop",
             "reset",
@@ -77,11 +81,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="payout real do ativo/corretora; obrigatório em 'cycle'",
     )
     parser.add_argument("--cycle-index", type=int, default=1)
+    parser.add_argument("--file", type=Path, default=None, help="arquivo CSV ou JSON")
+    parser.add_argument("--broker", default=None, help="corretora de origem do dado")
+    parser.add_argument("--asset", default=None, help="ativo")
+    parser.add_argument("--timeframe", default=None, help="timeframe, ex: M1")
+    parser.add_argument(
+        "--origin",
+        default="BROKER_OTC",
+        choices=("BROKER_OTC", "MARKET_PROXY"),
+        help="origem declarada do dado (nunca inferida do arquivo)",
+    )
     return parser
 
 
 def main(argv: tuple[str, ...] | None = None) -> int:
     """Executa a CLI e devolve o código de saída."""
+    _force_utf8_output()
     args = build_parser().parse_args(argv)
     logger = configure_structured_logger("ai_trading_lab.cli", sys.stdout)
 
@@ -126,6 +141,63 @@ def _dispatch(args, config: SystemConfig, store, dataset_store, logger) -> int:
     if args.command == "stop":
         runtime.stop("stop solicitado via CLI")
         print(f"Sistema em {runtime.system_status.value}")
+        return 0
+
+    if args.command == "import":
+        missing = [
+            flag
+            for flag, value in (
+                ("--file", args.file),
+                ("--dataset-id", args.dataset_id),
+                ("--broker", args.broker),
+                ("--asset", args.asset),
+                ("--timeframe", args.timeframe),
+            )
+            if not value
+        ]
+        if missing:
+            print(f"ERRO: 'import' exige {', '.join(missing)}", file=sys.stderr)
+            return 2
+
+        source = FileMarketDataSource(
+            path=args.file,
+            broker=args.broker,
+            asset=args.asset,
+            timeframe=args.timeframe,
+            origin=DataOrigin(args.origin),
+        )
+        read_result = source.read()
+        print(
+            f"Arquivo: {read_result.total_lines} registro(s), "
+            f"{read_result.accepted} aceito(s), {len(read_result.rejections)} recusado(s)"
+        )
+        for rejection in read_result.rejections[:10]:
+            print(f"  linha {rejection.line_number}: {rejection.reason}")
+        if len(read_result.rejections) > 10:
+            print(f"  ... e {len(read_result.rejections) - 10} outra(s)")
+
+        ingestion = ingest_raw_batch(dataset_store, args.dataset_id, read_result.points)
+        version = ingestion.dataset_version
+        report = ingestion.report
+        print(
+            f"Dataset {version.dataset_id} v{version.version} [{version.stage.value}] "
+            f"origem={version.origin.value} basis_risk_alto={version.basis_risk_high}"
+        )
+        print(
+            f"Validação: {report.total_accepted} aceito(s), "
+            f"{report.total_rejected} rejeitado(s), "
+            f"{report.duplicates_removed} duplicata(s), {len(report.gaps)} gap(s)"
+        )
+        print(f"hash={version.content_hash}")
+        log_event(
+            logger,
+            "dataset_imported",
+            dataset_id=version.dataset_id,
+            version=version.version,
+            origin=version.origin.value,
+            accepted=report.total_accepted,
+            rejected=report.total_rejected,
+        )
         return 0
 
     if args.command == "reset":
@@ -198,6 +270,18 @@ def _dispatch(args, config: SystemConfig, store, dataset_store, logger) -> int:
         print(report)
         print()
     return 0 if outcome.readiness.value == "READY" else 3
+
+
+def _force_utf8_output() -> None:
+    """Garante saída UTF-8 no Windows, onde o console usa cp1252 por padrão."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except (ValueError, OSError):
+                # Stream sem suporte a reconfiguração não deve impedir a execução.
+                pass
 
 
 def _ensure_parent(path: Path) -> None:

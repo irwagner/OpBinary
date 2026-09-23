@@ -59,8 +59,14 @@ class ValidatorAgent(BaseAgent):
         broker_risk: BrokerRiskReport,
         validation_config: ValidationConfig,
         risk_config: RiskConfig,
+        expectancy_margin: float = 0.0,
     ) -> ValidationChecklist:
-        """Constrói o checklist a partir de relatórios já calculados."""
+        """Constrói o checklist a partir de relatórios já calculados.
+
+        `expectancy_margin` é a exigência extra imposta pelo tamanho do espaço
+        de busca varrido: quanto mais hipóteses testadas, maior a margem que a
+        estratégia precisa superar para não ser um vencedor por acaso.
+        """
         leakage_findings = {
             finding.category
             for finding in adversarial.findings
@@ -71,7 +77,7 @@ class ValidatorAgent(BaseAgent):
             and statistics.trades > 0,
             no_data_leakage="data_leakage" not in leakage_findings,
             no_look_ahead_bias="look_ahead_bias" not in leakage_findings,
-            oos_passed=statistics.oos_expectancy > 0,
+            oos_passed=statistics.oos_expectancy > expectancy_margin,
             walk_forward_passed=statistics.fold_pass_ratio
             >= validation_config.min_fold_pass_ratio,
             monte_carlo_passed=statistics.monte_carlo_ruin_probability
@@ -80,7 +86,7 @@ class ValidatorAgent(BaseAgent):
             drawdown_reviewed=risk.worst_drawdown <= risk_config.max_drawdown_limit,
             loss_streak_reviewed=risk.loss_streak_within_limit,
             adversarial_passed=adversarial.verdict is not Verdict.FAIL,
-            expectancy_positive_net_payout=statistics.expectancy > 0,
+            expectancy_positive_net_payout=statistics.expectancy > expectancy_margin,
             risk_reviewed=risk.verdict is not Verdict.FAIL,
             broker_risk_passed=broker_risk.status is Verdict.PASS,
             documentation_complete=bool(statistics.envelope and adversarial.envelope),

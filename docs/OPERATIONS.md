@@ -1,14 +1,12 @@
 # AI Trading Research Lab — Manual de Operação
 
-Estado atual do sistema: **ON, em RESEARCH, ocioso por falta de dados.**
+Estado: **ON, em RESEARCH.** Pipeline completo validado de ponta a ponta
+(importação → backtest → walk-forward → Monte Carlo → risco → decisão).
 
 ```text
 Mode:        RESEARCH
-System:      IDLE
-Readiness:   NO_DATA
 Execution:   DISABLED
 REAL:        BLOCKED
-Datasets:    0
 ```
 
 ---
@@ -34,6 +32,7 @@ $env:PYTHONPATH = 'src'
 |---|---|
 | `python -m ai_trading_lab.cli status --dataset-id <ID>` | Dashboard, health check e datasets |
 | `python -m ai_trading_lab.cli agents` | Lista os 11 agentes registrados |
+| `python -m ai_trading_lab.cli import ...` | Importa série de CSV/JSON (ver seção 2.1) |
 | `python -m ai_trading_lab.cli cycle --dataset-id <ID> --payout <valor>` | Executa um ciclo de pesquisa |
 | `python -m ai_trading_lab.cli stop` | Encerra o ciclo (RUNNING → STOPPED) |
 | `python -m ai_trading_lab.cli reset --operator <nome>` | STOPPED → IDLE |
@@ -45,6 +44,43 @@ para inspeção: a configuração reprova execução por construção.
 
 `--payout` é obrigatório em `cycle` e deve ser o payout **real** do ativo na
 corretora. O sistema nunca inventa esse número.
+
+---
+
+## 2.1 Importar dados
+
+```powershell
+python -m ai_trading_lab.cli import `
+  --file data/raw/minha_serie.csv `
+  --dataset-id DATA-EURUSD-OTC `
+  --broker Polarium `
+  --asset EURUSD-OTC `
+  --timeframe M1 `
+  --origin BROKER_OTC
+```
+
+Formato aceito: CSV com cabeçalho ou JSON com lista de objetos. Colunas
+obrigatórias: `timestamp` e `price`.
+
+```csv
+timestamp,price
+2026-09-23T14:30:00-03:00,1.16542
+2026-09-23T14:31:00-03:00,1.16551
+```
+
+Regras da importação:
+
+- **Timezone é obrigatório.** `2026-09-23T14:30:00` sem offset é rejeitado.
+  Use `-03:00` ou `Z`. Epoch em segundos também é aceito.
+- `--origin` é declarado por você, nunca inferido do arquivo:
+  - `BROKER_OTC` — preço gerado pela corretora. Marca `basis_risk` alto.
+  - `MARKET_PROXY` — dado real de mercado usado como referência.
+- **Origens nunca se misturam.** Cada corretora tem seu próprio dataset, mesmo
+  para o mesmo ativo e timeframe. O preço OTC da corretora A não é comparável
+  ao da B.
+- Linha inválida é rejeitada e reportada, nunca corrigida por suposição.
+- Cada importação cria uma **nova versão** do dataset com hash próprio. Versões
+  anteriores nunca são sobrescritas.
 
 ---
 
@@ -84,7 +120,9 @@ para operação. Retomar exige um segundo passo deliberado (`reset`).
 - `audit_events`, `experiments`, `dataset_versions`, `dataset_points` e
   `quality_reports` são append-only.
 - Segredos são mascarados antes de qualquer log ou gravação de auditoria.
-- Broker Risk sem fonte de evidência configurada retorna `FAIL`, bloqueando DEMO.
+- Broker Risk é **informativo** em RESEARCH e DEMO (ADR-007), porque não há
+  capital em risco. Continua obrigatório em REAL: `real.yaml` é rejeitado se
+  `broker_risk.blocking` for falso.
 
 Os triggers de proteção são recriados a cada abertura do banco e a versão fica
 registrada em `schema_meta.guard_schema_version`. Um banco antigo nunca continua
@@ -92,22 +130,40 @@ rodando com barreiras desatualizadas.
 
 ---
 
-## 6. Por que o sistema está ocioso
+## 6. Readiness
 
-`Readiness: NO_DATA` significa que a infraestrutura está pronta mas não existe
-dataset coletado. Conforme ADR-005, a única fonte legítima de dados é a própria
-corretora-alvo. Não há coletor implementado porque isso exige a API oficial da
-corretora — e inventar uma API está fora de escopo.
+| Estado | Significado |
+|---|---|
+| `READY` | Há dataset com versão registrada; o ciclo roda |
+| `NO_DATA` | Infraestrutura pronta, sem dataset. `cycle` não roda e retorna sem falhar |
+| `BLOCKED` | Emergency stop ativo ou alguma barreira de segurança reprovando |
 
-Enquanto não houver dataset:
-
-- `cycle` não roda e retorna `NO_DATA` sem falhar;
-- nenhum backtest, walk-forward ou Monte Carlo produz resultado;
-- nenhuma estratégia avança de estado.
+Para sair de `NO_DATA`, importe uma série (seção 2.1).
 
 ---
 
-## 7. Arquivos gerados em runtime
+## 7. Interpretando o resultado
+
+O número que decide tudo é o **expectancy líquido de payout**:
+
+```text
+expectancy = (win_rate × payout) - (loss_rate × 1)
+```
+
+Com payout de 0.87, o ponto de equilíbrio é `1 / (1 + 0.87)` = **53,48% de
+acerto**. Abaixo disso a estratégia perde dinheiro mesmo parecendo "quase
+acertar metade". É por isso que taxa de acerto sozinha nunca valida nada.
+
+Uma estratégia só avança se **todos** os folds do walk-forward tiverem
+expectancy positivo (ADR-004, configurável em `validation.min_fold_pass_ratio`).
+
+Se o sistema rejeitar quase tudo, isso normalmente é o comportamento correto —
+principalmente em dado sem edge real. Uma validação que aprova estratégia em
+série aleatória está quebrada, não generosa.
+
+---
+
+## 8. Arquivos gerados em runtime
 
 ```text
 logs/state.db             estado global, estratégias, promoções, auditoria
