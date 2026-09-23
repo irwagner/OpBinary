@@ -9,14 +9,33 @@
 
 ## 1. Fases de implementação
 
-### FASE 0 — Especificação (em andamento)
+## Status atual (atualizado)
+
+```text
+[x] FASE 0  Especificação
+[x] FASE 1  Infraestrutura            195 testes passando
+[x] FASE 2  Data Engine               coletor/validação/split/versionamento
+[x] FASE 3  Backtest Engine           determinístico, walk-forward, Monte Carlo
+[x] FASE 4  Research Agents           Supervisor, Researcher, Quant, Backtester
+[x] FASE 5  Validation                Statistician, Adversarial, Risk, Broker Risk, Validator
+[x] FASE 6  Dashboard                 somente leitura, via CLI
+[x] FASE 7  Runtime/Crew handoff      ciclo da seção 40 + crew/README.md
+[ ] FASE 8  DEMO                      BLOQUEADO: sem dados e sem Broker Risk PASS
+[ ] FASE 9  Validação prolongada
+[ ] FASE 10 REAL                      bloqueado por construção
+```
+
+Estado operacional: sistema ON, em RESEARCH, `Readiness: NO_DATA`.
+Bloqueador único para avançar: fonte de dados da corretora (ADR-005).
+
+### FASE 0 — Especificação (concluída)
 
 ```text
 [x] arquitetura        → docs/ARCHITECTURE.md
 [x] contratos          → docs/AGENT_CONTRACTS.md
 [x] segurança           → docs/SECURITY_MODEL.md
 [x] decisões/ambiguidades → docs/decisions/ADR-001..006
-[ ] aprovação final do usuário para iniciar Fase 1
+[x] operação            → docs/OPERATIONS.md
 ```
 
 ### FASE 1 — Infraestrutura *(nenhuma execução real)*

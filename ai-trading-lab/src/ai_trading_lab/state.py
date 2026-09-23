@@ -53,6 +53,14 @@ class StateRepository(Protocol):
         actor: Actor,
     ) -> SystemStateSnapshot: ...
 
+    def clear_emergency_stop(
+        self,
+        snapshot: SystemStateSnapshot,
+        event: AuditEvent,
+        *,
+        actor: Actor,
+    ) -> SystemStateSnapshot: ...
+
     def load_strategy_state(self, strategy_id: str) -> StrategyStateSnapshot | None: ...
 
     def initialize_strategy_state(
@@ -209,6 +217,34 @@ class StateManager:
         self._snapshot = persisted
         return persisted
 
+    def clear_emergency_stop(self, reason: str, *, actor: Actor) -> SystemStateSnapshot:
+        """Sai de EMERGENCY_STOPPED para STOPPED por ação humana explícita.
+
+        Não retoma a operação: o sistema fica em STOPPED e voltar a RUNNING
+        exige uma segunda decisão deliberada.
+        """
+        latest = self._repository.load_system_state()
+        if latest is None:
+            raise InvalidStateTransition("estado global não inicializado")
+        self._snapshot = latest
+        if latest.status is not SystemStatus.EMERGENCY_STOPPED:
+            raise InvalidStateTransition("sistema não está em EMERGENCY_STOPPED")
+
+        candidate = SystemStateSnapshot(status=SystemStatus.STOPPED, reason=reason)
+        event = AuditEvent(
+            event_type="emergency_stop_cleared",
+            actor=actor.actor_id,
+            payload={
+                "actor_role": actor.role.value,
+                "previous_status": SystemStatus.EMERGENCY_STOPPED.value,
+                "status": SystemStatus.STOPPED.value,
+                "reason": reason,
+            },
+        )
+        persisted = self._repository.clear_emergency_stop(candidate, event, actor=actor)
+        self._snapshot = persisted
+        return persisted
+
     def _refresh(self) -> None:
         current = self._repository.load_system_state()
         if current is not None:
@@ -260,6 +296,10 @@ class StrategyStateManager:
             actor=actor,
         )
         return snapshot
+
+    def load(self, strategy_id: str) -> StrategyStateSnapshot | None:
+        """Lê o estado atual de uma estratégia (leitura não exige capacidade)."""
+        return self._repository.load_strategy_state(strategy_id)
 
     def transition(
         self,

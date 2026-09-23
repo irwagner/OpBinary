@@ -18,6 +18,40 @@ from .errors import DatasetVersionError, PersistenceError
 from .logging import sanitize
 
 
+_DATASET_GUARD_TRIGGERS = """
+DROP TRIGGER IF EXISTS forbid_dataset_version_update;
+DROP TRIGGER IF EXISTS forbid_dataset_version_delete;
+DROP TRIGGER IF EXISTS forbid_dataset_points_update;
+DROP TRIGGER IF EXISTS forbid_dataset_points_delete;
+DROP TRIGGER IF EXISTS forbid_quality_reports_update;
+DROP TRIGGER IF EXISTS forbid_quality_reports_delete;
+
+CREATE TRIGGER forbid_dataset_version_update
+BEFORE UPDATE ON dataset_versions
+BEGIN SELECT RAISE(ABORT, 'dataset_versions is append-only'); END;
+
+CREATE TRIGGER forbid_dataset_version_delete
+BEFORE DELETE ON dataset_versions
+BEGIN SELECT RAISE(ABORT, 'dataset_versions is append-only'); END;
+
+CREATE TRIGGER forbid_dataset_points_update
+BEFORE UPDATE ON dataset_points
+BEGIN SELECT RAISE(ABORT, 'dataset_points is append-only'); END;
+
+CREATE TRIGGER forbid_dataset_points_delete
+BEFORE DELETE ON dataset_points
+BEGIN SELECT RAISE(ABORT, 'dataset_points is append-only'); END;
+
+CREATE TRIGGER forbid_quality_reports_update
+BEFORE UPDATE ON quality_reports
+BEGIN SELECT RAISE(ABORT, 'quality_reports is append-only'); END;
+
+CREATE TRIGGER forbid_quality_reports_delete
+BEFORE DELETE ON quality_reports
+BEGIN SELECT RAISE(ABORT, 'quality_reports is append-only'); END;
+"""
+
+
 class DatasetStore:
     """Armazena versões de dataset, pontos validados e relatórios de qualidade."""
 
@@ -218,26 +252,11 @@ class DatasetStore:
                     FOREIGN KEY (dataset_id, version)
                         REFERENCES dataset_versions(dataset_id, version)
                 );
-                CREATE TRIGGER IF NOT EXISTS forbid_dataset_version_update
-                BEFORE UPDATE ON dataset_versions
-                BEGIN SELECT RAISE(ABORT, 'dataset_versions is append-only'); END;
-                CREATE TRIGGER IF NOT EXISTS forbid_dataset_version_delete
-                BEFORE DELETE ON dataset_versions
-                BEGIN SELECT RAISE(ABORT, 'dataset_versions is append-only'); END;
-                CREATE TRIGGER IF NOT EXISTS forbid_dataset_points_update
-                BEFORE UPDATE ON dataset_points
-                BEGIN SELECT RAISE(ABORT, 'dataset_points is append-only'); END;
-                CREATE TRIGGER IF NOT EXISTS forbid_dataset_points_delete
-                BEFORE DELETE ON dataset_points
-                BEGIN SELECT RAISE(ABORT, 'dataset_points is append-only'); END;
-                CREATE TRIGGER IF NOT EXISTS forbid_quality_reports_update
-                BEFORE UPDATE ON quality_reports
-                BEGIN SELECT RAISE(ABORT, 'quality_reports is append-only'); END;
-                CREATE TRIGGER IF NOT EXISTS forbid_quality_reports_delete
-                BEFORE DELETE ON quality_reports
-                BEGIN SELECT RAISE(ABORT, 'quality_reports is append-only'); END;
                 """
             )
+            # Recriados a cada inicialização para que um banco antigo nunca
+            # fique com uma versão desatualizada das barreiras append-only.
+            connection.executescript(_DATASET_GUARD_TRIGGERS)
 
     def _transaction(self) -> _Transaction:
         return _Transaction(self._connection, self._lock)

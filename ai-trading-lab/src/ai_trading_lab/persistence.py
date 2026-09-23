@@ -33,6 +33,72 @@ from .models import (
 from .transitions import validate_strategy_transition, validate_system_transition
 
 
+GUARD_SCHEMA_VERSION = "2"
+
+_GUARD_TRIGGERS = """
+DROP TRIGGER IF EXISTS forbid_invalid_system_transition;
+DROP TRIGGER IF EXISTS forbid_invalid_strategy_transition;
+DROP TRIGGER IF EXISTS forbid_real_without_approval;
+DROP TRIGGER IF EXISTS forbid_audit_update;
+DROP TRIGGER IF EXISTS forbid_audit_delete;
+DROP TRIGGER IF EXISTS forbid_experiment_update;
+DROP TRIGGER IF EXISTS forbid_experiment_delete;
+
+CREATE TRIGGER forbid_invalid_system_transition
+BEFORE UPDATE ON system_state
+WHEN NOT (
+    (OLD.status <> 'EMERGENCY_STOPPED' AND NEW.status = 'EMERGENCY_STOPPED')
+    -- Saída do emergency stop só para STOPPED, e apenas pelo caminho humano
+    -- dedicado (clear_emergency_stop). Nenhum agente alcança esta transição.
+    OR (OLD.status = 'EMERGENCY_STOPPED' AND NEW.status = 'STOPPED')
+    OR (OLD.status = 'IDLE' AND NEW.status IN ('RUNNING', 'STOPPED'))
+    OR (OLD.status = 'RUNNING' AND NEW.status IN ('PAUSED', 'ERROR', 'STOPPED'))
+    OR (OLD.status = 'PAUSED' AND NEW.status IN ('RUNNING', 'STOPPED'))
+    OR (OLD.status = 'ERROR' AND NEW.status IN ('RUNNING', 'STOPPED'))
+    OR (OLD.status = 'STOPPED' AND NEW.status = 'IDLE')
+)
+BEGIN SELECT RAISE(ABORT, 'invalid system transition'); END;
+
+CREATE TRIGGER forbid_invalid_strategy_transition
+BEFORE UPDATE ON strategy_state
+WHEN NOT (
+    (OLD.status = 'IDEA' AND NEW.status IN ('BACKTEST', 'REJECTED', 'NEEDS_RESEARCH'))
+    OR (OLD.status = 'BACKTEST' AND NEW.status IN ('VALIDATION', 'REJECTED', 'NEEDS_RESEARCH'))
+    OR (OLD.status = 'VALIDATION' AND NEW.status IN ('OUT_OF_SAMPLE', 'REJECTED', 'NEEDS_RESEARCH'))
+    OR (OLD.status = 'OUT_OF_SAMPLE' AND NEW.status IN ('MONTE_CARLO', 'REJECTED', 'NEEDS_RESEARCH'))
+    OR (OLD.status = 'MONTE_CARLO' AND NEW.status IN ('DEMO_CANDIDATE', 'REJECTED', 'NEEDS_RESEARCH'))
+    OR (OLD.status = 'DEMO_CANDIDATE' AND NEW.status IN ('DEMO', 'REJECTED', 'NEEDS_RESEARCH'))
+    OR (OLD.status = 'DEMO' AND NEW.status IN ('HUMAN_REVIEW', 'REJECTED', 'NEEDS_RESEARCH'))
+    OR (OLD.status = 'HUMAN_REVIEW' AND NEW.status IN ('REAL', 'REJECTED', 'NEEDS_RESEARCH'))
+)
+BEGIN SELECT RAISE(ABORT, 'invalid strategy transition'); END;
+
+CREATE TRIGGER forbid_real_without_approval
+BEFORE UPDATE ON strategy_state
+WHEN NEW.status = 'REAL' AND NOT EXISTS (
+    SELECT 1 FROM promotion_requests
+    WHERE strategy_id = NEW.strategy_id AND status = 'APPROVED'
+)
+BEGIN SELECT RAISE(ABORT, 'human approval required'); END;
+
+CREATE TRIGGER forbid_audit_update
+BEFORE UPDATE ON audit_events
+BEGIN SELECT RAISE(ABORT, 'audit_events is append-only'); END;
+
+CREATE TRIGGER forbid_audit_delete
+BEFORE DELETE ON audit_events
+BEGIN SELECT RAISE(ABORT, 'audit_events is append-only'); END;
+
+CREATE TRIGGER forbid_experiment_update
+BEFORE UPDATE ON experiments
+BEGIN SELECT RAISE(ABORT, 'experiments is append-only'); END;
+
+CREATE TRIGGER forbid_experiment_delete
+BEFORE DELETE ON experiments
+BEGIN SELECT RAISE(ABORT, 'experiments is append-only'); END;
+"""
+
+
 class SQLiteStore:
     """Armazena estado e auditoria sem credenciais ou conexões externas."""
 
@@ -167,6 +233,45 @@ class SQLiteStore:
                 return snapshot
         except sqlite3.DatabaseError as error:
             raise PersistenceError("falha no emergency stop atômico") from error
+
+    def clear_emergency_stop(
+        self,
+        snapshot: SystemStateSnapshot,
+        event: AuditEvent,
+        *,
+        actor: Actor,
+    ) -> SystemStateSnapshot:
+        """Caminho humano dedicado para sair de EMERGENCY_STOPPED para STOPPED.
+
+        Não reativa o sistema: leva a STOPPED, exigindo um segundo passo
+        deliberado para voltar a operar. Nenhum agente possui esta capacidade.
+        """
+        self._require(actor, Capability.CLEAR_EMERGENCY_STOP)
+        if snapshot.status is not SystemStatus.STOPPED:
+            raise InvalidStateTransition("clear_emergency_stop deve levar a STOPPED")
+        try:
+            with self._transaction() as connection:
+                cursor = connection.execute(
+                    """
+                    UPDATE system_state
+                    SET status = ?, updated_at = ?, reason = ?
+                    WHERE singleton_id = 1 AND status = ?
+                    """,
+                    (
+                        snapshot.status.value,
+                        snapshot.updated_at.isoformat(),
+                        snapshot.reason,
+                        SystemStatus.EMERGENCY_STOPPED.value,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise InvalidStateTransition(
+                        "sistema não está em EMERGENCY_STOPPED"
+                    )
+                _insert_audit_event(connection, event)
+                return snapshot
+        except sqlite3.DatabaseError as error:
+            raise PersistenceError("falha ao limpar emergency stop") from error
 
     def load_strategy_state(self, strategy_id: str) -> StrategyStateSnapshot | None:
         """Retorna o estado atual de uma estratégia."""
@@ -483,50 +588,22 @@ class SQLiteStore:
                     parameters_json TEXT NOT NULL,
                     status TEXT NOT NULL
                 );
-                CREATE TRIGGER IF NOT EXISTS forbid_invalid_system_transition
-                BEFORE UPDATE ON system_state
-                WHEN NOT (
-                    (OLD.status <> 'EMERGENCY_STOPPED' AND NEW.status = 'EMERGENCY_STOPPED')
-                    OR (OLD.status = 'IDLE' AND NEW.status IN ('RUNNING', 'STOPPED'))
-                    OR (OLD.status = 'RUNNING' AND NEW.status IN ('PAUSED', 'ERROR', 'STOPPED'))
-                    OR (OLD.status = 'PAUSED' AND NEW.status IN ('RUNNING', 'STOPPED'))
-                    OR (OLD.status = 'ERROR' AND NEW.status IN ('RUNNING', 'STOPPED'))
-                    OR (OLD.status = 'STOPPED' AND NEW.status = 'IDLE')
-                )
-                BEGIN SELECT RAISE(ABORT, 'invalid system transition'); END;
-                CREATE TRIGGER IF NOT EXISTS forbid_invalid_strategy_transition
-                BEFORE UPDATE ON strategy_state
-                WHEN NOT (
-                    (OLD.status = 'IDEA' AND NEW.status IN ('BACKTEST', 'REJECTED', 'NEEDS_RESEARCH'))
-                    OR (OLD.status = 'BACKTEST' AND NEW.status IN ('VALIDATION', 'REJECTED', 'NEEDS_RESEARCH'))
-                    OR (OLD.status = 'VALIDATION' AND NEW.status IN ('OUT_OF_SAMPLE', 'REJECTED', 'NEEDS_RESEARCH'))
-                    OR (OLD.status = 'OUT_OF_SAMPLE' AND NEW.status IN ('MONTE_CARLO', 'REJECTED', 'NEEDS_RESEARCH'))
-                    OR (OLD.status = 'MONTE_CARLO' AND NEW.status IN ('DEMO_CANDIDATE', 'REJECTED', 'NEEDS_RESEARCH'))
-                    OR (OLD.status = 'DEMO_CANDIDATE' AND NEW.status IN ('DEMO', 'REJECTED', 'NEEDS_RESEARCH'))
-                    OR (OLD.status = 'DEMO' AND NEW.status IN ('HUMAN_REVIEW', 'REJECTED', 'NEEDS_RESEARCH'))
-                    OR (OLD.status = 'HUMAN_REVIEW' AND NEW.status IN ('REAL', 'REJECTED', 'NEEDS_RESEARCH'))
-                )
-                BEGIN SELECT RAISE(ABORT, 'invalid strategy transition'); END;
-                CREATE TRIGGER IF NOT EXISTS forbid_real_without_approval
-                BEFORE UPDATE ON strategy_state
-                WHEN NEW.status = 'REAL' AND NOT EXISTS (
-                    SELECT 1 FROM promotion_requests
-                    WHERE strategy_id = NEW.strategy_id AND status = 'APPROVED'
-                )
-                BEGIN SELECT RAISE(ABORT, 'human approval required'); END;
-                CREATE TRIGGER IF NOT EXISTS forbid_audit_update
-                BEFORE UPDATE ON audit_events
-                BEGIN SELECT RAISE(ABORT, 'audit_events is append-only'); END;
-                CREATE TRIGGER IF NOT EXISTS forbid_audit_delete
-                BEFORE DELETE ON audit_events
-                BEGIN SELECT RAISE(ABORT, 'audit_events is append-only'); END;
-                CREATE TRIGGER IF NOT EXISTS forbid_experiment_update
-                BEFORE UPDATE ON experiments
-                BEGIN SELECT RAISE(ABORT, 'experiments is append-only'); END;
-                CREATE TRIGGER IF NOT EXISTS forbid_experiment_delete
-                BEFORE DELETE ON experiments
-                BEGIN SELECT RAISE(ABORT, 'experiments is append-only'); END;
+                CREATE TABLE IF NOT EXISTS schema_meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
                 """
+            )
+            # Triggers são regras derivadas do código, não dados do usuário.
+            # São recriados a cada inicialização para que um banco antigo nunca
+            # continue rodando com uma versão desatualizada das barreiras.
+            connection.executescript(_GUARD_TRIGGERS)
+            connection.execute(
+                """
+                INSERT INTO schema_meta(key, value) VALUES ('guard_schema_version', ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (GUARD_SCHEMA_VERSION,),
             )
 
     def _transaction(self) -> _Transaction:

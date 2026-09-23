@@ -14,6 +14,7 @@ class Capability(StrEnum):
 
     MANAGE_SYSTEM_STATE = "MANAGE_SYSTEM_STATE"
     EMERGENCY_STOP = "EMERGENCY_STOP"
+    CLEAR_EMERGENCY_STOP = "CLEAR_EMERGENCY_STOP"
     INITIALIZE_STRATEGY = "INITIALIZE_STRATEGY"
     TRANSITION_STRATEGY = "TRANSITION_STRATEGY"
     REQUEST_REAL_PROMOTION = "REQUEST_REAL_PROMOTION"
@@ -25,6 +26,8 @@ _DEFAULT_GRANTS: Mapping[Capability, frozenset[ActorRole]] = {
         {ActorRole.SYSTEM, ActorRole.SUPERVISOR, ActorRole.HUMAN}
     ),
     Capability.EMERGENCY_STOP: frozenset({ActorRole.SYSTEM, ActorRole.HUMAN}),
+    # Somente humano limpa o emergency stop. Nenhum agente ou automação pode.
+    Capability.CLEAR_EMERGENCY_STOP: frozenset({ActorRole.HUMAN}),
     Capability.INITIALIZE_STRATEGY: frozenset({ActorRole.SUPERVISOR}),
     Capability.TRANSITION_STRATEGY: frozenset({ActorRole.VALIDATOR}),
     Capability.REQUEST_REAL_PROMOTION: frozenset({ActorRole.SUPERVISOR}),
