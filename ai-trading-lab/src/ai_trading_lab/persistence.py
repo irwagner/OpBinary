@@ -473,6 +473,32 @@ class SQLiteStore:
         except sqlite3.DatabaseError as error:
             raise PersistenceError("falha ao decidir solicitação de promoção") from error
 
+    def load_experiment_parameters(
+        self, dataset_prefix: str | None = None
+    ) -> tuple[dict[str, object], ...]:
+        """Devolve os parâmetros de todos os experimentos já registrados.
+
+        Permite reconstruir quais combinações de regra já foram testadas depois
+        de um restart, evitando que uma campanha longa recomece do zero.
+        """
+        query = "SELECT parameters_json, dataset_id FROM experiments"
+        params: tuple[object, ...] = ()
+        if dataset_prefix:
+            query += " WHERE dataset_id LIKE ?"
+            params = (f"{dataset_prefix}%",)
+        with self._lock:
+            rows = self._connection.execute(query, params).fetchall()
+
+        parameters: list[dict[str, object]] = []
+        for row in rows:
+            try:
+                decoded = json.loads(row["parameters_json"])
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if isinstance(decoded, dict):
+                parameters.append(decoded)
+        return tuple(parameters)
+
     def latest_strategy_sequence(self) -> int:
         """Maior sequência de strategy_id já persistida, ou 0 se não houver.
 

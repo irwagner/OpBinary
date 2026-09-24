@@ -15,7 +15,9 @@ _SECRET_NAME = (
     r"private[_-]?key|privateKey|access[_-]?token|accessToken|"
     r"refresh[_-]?token|refreshToken|id[_-]?token|idToken|"
     r"auth[_-]?token|authToken|secret|password|passphrase|token|"
-    r"credential|authorization|cookie)"
+    r"credential|authorization|cookie|"
+    # SSID é a credencial de sessão das plataformas Quadcode/IQ Option.
+    r"ssid|session[_-]?id|sessionId)"
 )
 _SECRET_KEY = re.compile(_SECRET_NAME, re.IGNORECASE)
 _SECRET_ASSIGNMENT = re.compile(

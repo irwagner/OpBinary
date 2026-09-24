@@ -60,9 +60,12 @@ def run_monte_carlo(
     drawdowns: list[float] = []
     loss_streaks: list[int] = []
     ruins = 0
+    sample_size = len(outcomes)
 
     for _ in range(runs):
-        resampled = tuple(generator.choice(outcomes) for _ in range(len(outcomes)))
+        # Amostragem em lote: muito mais rápida que sortear uma a uma, e
+        # igualmente determinística para um mesmo seed.
+        resampled = tuple(generator.choices(outcomes, k=sample_size))
         curve = build_equity_curve(resampled, initial_capital, payout, risk_per_trade)
         final_capitals.append(curve.values[-1] if curve.values else initial_capital)
         drawdowns.append(curve.max_drawdown)

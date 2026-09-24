@@ -20,6 +20,16 @@ def main() -> int:
     parser.add_argument("--min-trades", type=int, default=MIN_TRADES_DEFAULT)
     parser.add_argument("--payout", type=float, default=0.87)
     parser.add_argument("--top", type=int, default=10)
+    parser.add_argument(
+        "--dataset-id",
+        default=None,
+        help="filtra por dataset; sem isso o ranking mistura campanhas diferentes",
+    )
+    parser.add_argument(
+        "--list-datasets",
+        action="store_true",
+        help="lista os datasets presentes na auditoria e sai",
+    )
     args = parser.parse_args()
 
     connection = sqlite3.connect(args.state_db)
@@ -33,6 +43,29 @@ def main() -> int:
         ]
     finally:
         connection.close()
+
+    if args.list_datasets:
+        contagem: dict[str, int] = {}
+        for row in rows:
+            chave = str(row.get("dataset_id", "(sem dataset_id)"))
+            contagem[chave] = contagem.get(chave, 0) + 1
+        print("Datasets presentes na auditoria:")
+        for chave, total in sorted(contagem.items()):
+            print(f"  {total:>5} backtests  {chave}")
+        return 0
+
+    if args.dataset_id:
+        rows = [row for row in rows if row.get("dataset_id") == args.dataset_id]
+        print(f"Filtrado por dataset: {args.dataset_id}")
+    else:
+        distintos = {str(row.get("dataset_id", "?")) for row in rows}
+        if len(distintos) > 1:
+            print(
+                f"AVISO: a auditoria contém {len(distintos)} datasets diferentes. "
+                "Sem --dataset-id o ranking mistura campanhas não comparáveis."
+            )
+            print("Use --list-datasets para ver as opções.")
+            print()
 
     eligible = [row for row in rows if row.get("trades", 0) >= args.min_trades]
     eligible.sort(key=lambda row: row["expectancy"], reverse=True)

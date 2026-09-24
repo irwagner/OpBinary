@@ -44,14 +44,20 @@ class RiskAgent(BaseAgent):
         scenarios: list[CapitalRisk] = []
         findings: list[Finding] = []
 
+        # Com aposta fracionária sobre o capital corrente, a trajetória de
+        # capital é proporcional ao capital inicial. Portanto drawdown relativo
+        # e probabilidade de ruína são idênticos em todos os cenários — calcular
+        # Monte Carlo por cenário seria repetir o mesmo número cinco vezes.
+        reference = backtest.scenarios[0]
+        monte = run_monte_carlo(
+            backtest.outcomes,
+            runs=monte_carlo_runs,
+            initial_capital=reference.initial_capital,
+            payout=backtest.payout,
+            risk_per_trade=reference.risk_per_trade,
+        )
+
         for scenario in backtest.scenarios:
-            monte = run_monte_carlo(
-                backtest.outcomes,
-                runs=monte_carlo_runs,
-                initial_capital=scenario.initial_capital,
-                payout=backtest.payout,
-                risk_per_trade=scenario.risk_per_trade,
-            )
             scenarios.append(
                 CapitalRisk(
                     capital_scenario=int(scenario.initial_capital),

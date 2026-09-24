@@ -1,28 +1,52 @@
 /*
  * Capturador de frames de WebSocket — para você rodar no SEU navegador.
  *
- * O que faz: observa as mensagens que a página já está recebendo e guarda em
- * memória. Depois você baixa um arquivo .json para eu analisar o formato real.
+ * O que faz: observa as mensagens que a página recebe e guarda em memória.
+ * Depois você baixa um .json para eu analisar o formato real.
  *
- * O que NÃO faz: não envia nada, não altera nada na página, não faz requisição
- * para servidor nenhum, não transmite dado para fora da sua máquina. É somente
- * leitura passiva do que a corretora já está mandando para o seu terminal.
+ * O que NÃO faz: não envia nada, não altera a página, não faz requisição para
+ * servidor nenhum, não transmite dado para fora da sua máquina. É leitura
+ * passiva do que a corretora já está mandando para o seu terminal.
  *
- * COMO USAR
- *   1. Abra o terminal da corretora logado, com o gráfico no ativo e timeframe
- *      que você quer estudar.
- *   2. Abra o DevTools (F12) e vá na aba Console.
- *   3. Cole este arquivo inteiro e aperte Enter.
- *   4. Deixe o gráfico rodando por alguns minutos. Quanto mais tempo, mais
- *      velas. Trocar o timeframe no gráfico costuma fazer a corretora reenviar
- *      o histórico inteiro, o que rende bastante dado de uma vez.
- *   5. Rode:  captura.resumo()     para ver o que foi coletado
- *   6. Rode:  captura.baixar()     para salvar o arquivo
+ * ============================================================================
+ * LIMITAÇÃO IMPORTANTE — leia antes
+ * ============================================================================
+ * Este script substitui `window.WebSocket`, então só enxerga conexões criadas
+ * DEPOIS que ele roda. A traderoom conecta no carregamento da página, portanto
+ * colar no console com a página já aberta captura ZERO mensagens.
+ *
+ * Duas formas de resolver:
+ *
+ *   FORMA 1 — Snippet + reload (funciona, exige um passo a mais)
+ *     1. DevTools (F12) → aba Sources → painel Snippets → New snippet
+ *     2. Cole este arquivo, salve (Ctrl+S) com o nome "captura"
+ *     3. Recarregue a página (Ctrl+R)
+ *     4. Assim que a página começar a carregar, rode o snippet (Ctrl+Enter)
+ *        Se perdeu a janela e deu 0, tente de novo — o objetivo é rodar antes
+ *        do app abrir o socket.
+ *     5. Use captura.diagnostico() para confirmar que o hook pegou algo
+ *
+ *   FORMA 2 — Aba Network (mais confiável, sem script)
+ *     Não precisa deste arquivo. Ver instruções em
+ *     docs/OPERATIONS.md, seção "Capturar formato pela aba Network".
+ *     Funciona na conexão já aberta e é o caminho recomendado só para
+ *     identificar o formato das mensagens.
+ *
+ * Use a FORMA 2 para descobrir o formato. Use a FORMA 1 quando precisar
+ * acumular volume de velas.
+ * ============================================================================
+ *
+ * COMANDOS
+ *   captura.diagnostico()    o hook está pegando? quantos sockets viu?
+ *   captura.resumo()         o que foi coletado, com exemplo
+ *   captura.baixarSoVelas()  baixa só o que parece vela
+ *   captura.baixar()         baixa tudo
+ *   captura.parar()          encerra e restaura o WebSocket original
  *
  * ANTES DE ME MANDAR O ARQUIVO
- *   Abra ele e dê uma olhada. O capturador já tenta remover campos com cara de
- *   credencial, mas a conferência final é sua. Se vir token, senha, cookie ou
- *   número de documento, apague antes de enviar. Eu só preciso de tempo e preço.
+ *   Abra e confira. O capturador já mascara campos com cara de credencial, mas
+ *   a revisão final é sua. Se vir token, senha, cookie ou documento, apague.
+ *   Eu só preciso de tempo e preço.
  */
 
 (() => {
@@ -38,6 +62,10 @@
 
   const coletadas = [];
   let descartadasPorLimite = 0;
+  let socketsVistos = 0;
+  let framesBinarios = 0;
+  const urlsVistas = new Set();
+  const instaladoEm = new Date();
 
   // Remove campos com cara de credencial antes de guardar.
   const limpar = (valor, profundidade = 0) => {
@@ -62,7 +90,10 @@
       return;
     }
     if (typeof dados !== "string") {
-      return; // ignora binário: não dá para interpretar sem o protocolo
+      // Binário (ArrayBuffer/Blob) não dá para interpretar sem conhecer o
+      // protocolo. Conta para o diagnóstico poder avisar.
+      framesBinarios += 1;
+      return;
     }
     let conteudo;
     try {
@@ -78,6 +109,8 @@
   const WebSocketOriginal = window.WebSocket;
   function WebSocketObservado(...argumentos) {
     const socket = new WebSocketOriginal(...argumentos);
+    socketsVistos += 1;
+    urlsVistas.add(String(argumentos[0] ?? "(sem url)"));
     socket.addEventListener("message", (evento) => {
       try {
         guardar(String(argumentos[0] ?? "ws"), evento.data);
@@ -102,6 +135,34 @@
     });
 
   window.captura = {
+    diagnostico() {
+      console.log(`hook instalado em: ${instaladoEm.toISOString()}`);
+      console.log(`sockets criados depois do hook: ${socketsVistos}`);
+      console.log(`frames de texto capturados:     ${coletadas.length}`);
+      console.log(`frames binários (ignorados):    ${framesBinarios}`);
+      if (urlsVistas.size) {
+        console.log("URLs de socket vistas:");
+        for (const url of urlsVistas) console.log(`  ${url}`);
+      }
+      if (socketsVistos === 0) {
+        console.warn(
+          "Nenhum socket foi criado depois do hook.\n" +
+          "A conexão da página já existia. Use a FORMA 1 (Snippet + reload) " +
+          "ou a FORMA 2 (aba Network) descritas no topo deste arquivo."
+        );
+      } else if (coletadas.length === 0 && framesBinarios > 0) {
+        console.warn(
+          "O socket foi capturado, mas os frames são binários. Vou precisar " +
+          "que você olhe a aba Network para eu entender o protocolo."
+        );
+      }
+      return {
+        sockets: socketsVistos,
+        texto: coletadas.length,
+        binarios: framesBinarios,
+      };
+    },
+
     resumo() {
       const candidatas = parecemVelas();
       console.log(`mensagens capturadas: ${coletadas.length}`);
@@ -116,7 +177,7 @@
         console.log("nenhuma mensagem com cara de vela ainda; exemplo qualquer:");
         console.log(JSON.stringify(coletadas[coletadas.length - 1], null, 2).slice(0, 800));
       } else {
-        console.log("nada capturado. Troque o timeframe do gráfico para forçar reenvio.");
+        console.log("nada capturado. Rode captura.diagnostico() para saber por quê.");
       }
       return { total: coletadas.length, velas: candidatas.length };
     },
@@ -169,10 +230,13 @@
 
   console.log(
     "Capturador ativo (somente leitura).\n" +
-      "Deixe o gráfico rodando, troque o timeframe para forçar o histórico, e use:\n" +
-      "  captura.resumo()         ver o que foi coletado\n" +
-      "  captura.baixarSoVelas()  baixar só o que parece vela\n" +
-      "  captura.baixar()         baixar tudo\n" +
-      "  captura.parar()          encerrar"
+    "ATENÇÃO: só enxerga conexões abertas DEPOIS deste momento.\n" +
+    "Se a página já estava carregada, o resultado será 0 — veja o cabeçalho\n" +
+    "do arquivo para as duas formas de contornar.\n\n" +
+    "  captura.diagnostico()    o hook está pegando algo?\n" +
+    "  captura.resumo()         ver o que foi coletado\n" +
+    "  captura.baixarSoVelas()  baixar só o que parece vela\n" +
+    "  captura.baixar()         baixar tudo\n" +
+    "  captura.parar()          encerrar"
   );
 })();

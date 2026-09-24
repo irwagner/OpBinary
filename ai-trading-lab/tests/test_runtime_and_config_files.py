@@ -219,6 +219,52 @@ class HealthAndRuntimeTests(unittest.TestCase):
 
         self.assertIs(SystemStatus.STOPPED, self.runtime.system_status)
 
+    def test_stopped_cycle_does_not_poison_tried_count(self) -> None:
+        """Regressão: um ciclo negado por STOPPED não pode contar como testado.
+
+        Antes do fix, run_cycle gravava o experimento e marcava a hipótese como
+        testada ANTES do gate de status do Supervisor. Com o sistema em STOPPED
+        o espaço inteiro era marcado como varrido sem nada ter sido avaliado.
+        """
+        _ingest_series(self.dataset_store, "DATA-STOPPED", 150)
+        human = Actor("human-test", ActorRole.HUMAN)
+        self.runtime._system_state.transition(
+            SystemStatus.RUNNING, "iniciar", actor=human
+        )
+        self.runtime._system_state.transition(
+            SystemStatus.STOPPED, "parar antes de varrer", actor=human
+        )
+        self.assertIs(SystemStatus.STOPPED, self.runtime.system_status)
+
+        experiments_before = len(self.store.load_experiment_parameters())
+
+        outcome = self.runtime.run_cycle("DATA-STOPPED", payout=0.87)
+
+        # Nada avaliado, nada avançado, e — o ponto do fix — nada contado nem gravado.
+        self.assertEqual(0, outcome.evaluated)
+        self.assertEqual(0, self.runtime.tried_count)
+        self.assertEqual(
+            experiments_before, len(self.store.load_experiment_parameters())
+        )
+
+    def test_tried_count_is_scoped_per_dataset(self) -> None:
+        """Regressão: varrer um ativo não marca o espaço de busca de outro.
+
+        Antes do fix, tried_count era global (sem dataset_prefix), então
+        experimentos de um dataset marcavam todos os outros como já testados.
+        """
+        _ingest_series(self.dataset_store, "DATA-ONE", 150)
+        _ingest_series(self.dataset_store, "DATA-TWO", 150)
+
+        self.runtime.run_cycle("DATA-ONE", payout=0.87)
+        tried_one = self.runtime.tried_count
+        self.assertGreater(tried_one, 0)
+
+        # Trocar para o segundo dataset: a contagem reflete SÓ o que foi testado
+        # nele, não herda as assinaturas do primeiro.
+        outcome_two = self.runtime.run_cycle("DATA-TWO", payout=0.87)
+        self.assertGreater(outcome_two.evaluated, 0)
+
 
 class DashboardTests(unittest.TestCase):
     def setUp(self) -> None:

@@ -163,7 +163,94 @@ série aleatória está quebrada, não generosa.
 
 ---
 
-## 8. Arquivos gerados em runtime
+## 8. Coletor da plataforma (Quadcode / protocolo IQ Option)
+
+A plataforma da Polarium foi identificada como Quadcode, com protocolo da
+família IQ Option. Detalhes e evidências em
+`docs/RESEARCH-broker-automation-landscape.md`.
+
+O coletor é **somente leitura**: lê histórico de velas e nada mais. Não existe
+método para enviar ordem, abrir posição ou alterar saldo.
+
+### Obter o SSID
+
+O SSID é a credencial de sessão — trate como senha temporária.
+
+1. Faça login no navegador normalmente.
+2. `F12` → Network → filtro WS → clique na conexão → aba Messages.
+3. Na primeira mensagem enviada (`authenticate`), copie o valor de `ssid`.
+
+Defina apenas na sessão atual do shell, **nunca em arquivo**:
+
+```powershell
+$env:BROKER_SSID = "<seu_ssid>"
+```
+
+Ao terminar, invalide a sessão fazendo **logout na plataforma** e limpe a
+variável:
+
+```powershell
+Remove-Item Env:BROKER_SSID
+```
+
+O SSID nunca é gravado em log: `logging.sanitize` mascara `ssid`, `session_id`
+e variantes antes de qualquer escrita.
+
+### Confirmar o formato antes de coletar volume
+
+```powershell
+$env:PYTHONPATH = "src"
+python scripts/probe_quadcode.py --active-id 76 --timeframe 60 --count 10
+```
+
+O probe conecta, autentica, pede velas e imprime o formato recebido mais a
+conversão para o modelo do laboratório. Se retornar vazio, ele lista os nomes
+das mensagens que chegaram, o que indica se o SSID expirou ou se o nome da
+requisição difere neste tenant.
+
+`--active-id` é o identificador numérico do ativo na plataforma. Ele aparece nas
+mensagens de WebSocket do terminal; se não souber, rode o probe com `--show-raw`
+e procure `active_id` nas mensagens.
+
+---
+
+## 9. Capturar formato pela aba Network
+
+Caminho recomendado para **descobrir o formato** das mensagens da corretora.
+Funciona na conexão já aberta e não precisa de script nenhum.
+
+1. Abra o terminal da corretora, logado.
+2. `F12` para abrir o DevTools.
+3. Vá na aba **Network** e clique no filtro **WS**.
+4. **Recarregue a página** (`Ctrl+R`) com o DevTools aberto. O Chrome só grava
+   frames de WebSocket enquanto o DevTools está aberto, então isso garante que
+   você pega a conexão desde o início.
+5. Na lista, clique na conexão WebSocket que apareceu.
+6. Clique na aba **Messages** (ou **Mensagens**).
+7. Com o gráfico rodando, os frames vão aparecendo. **Troque o timeframe do
+   gráfico** — nesse momento a corretora normalmente reenvia o histórico
+   inteiro, e é aí que aparece a mensagem com as velas.
+8. Clique numa mensagem que pareça conter velas para ver o conteúdo. Para
+   copiar: clique com o botão direito → copiar mensagem.
+
+O que interessa: uma mensagem que contenha tempo e preço, ou campos tipo
+`open` / `high` / `low` / `close` (às vezes abreviados para `o` / `h` / `l` / `c`).
+
+### Se os frames aparecerem como binário
+
+Algumas plataformas trafegam binário ou comprimido. Nesse caso o conteúdo não é
+legível direto, e vale reportar isso — a estratégia de coleta muda, porque exige
+conhecer o protocolo antes de decodificar.
+
+### Para acumular volume, não só identificar o formato
+
+Aí sim use `scripts/browser_capture.js` pela FORMA 1 descrita no cabeçalho dele
+(Sources → Snippets → reload → rodar o snippet), porque ele precisa estar
+instalado antes de a página abrir a conexão.
+
+---
+
+## 10. Arquivos gerados em runtime
 
 ```text
 logs/state.db             estado global, estratégias, promoções, auditoria

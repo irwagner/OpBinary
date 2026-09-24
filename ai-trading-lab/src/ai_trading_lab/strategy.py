@@ -202,10 +202,10 @@ def _within_hour_window(moment: datetime, window: tuple[int, int] | None) -> boo
 
 
 def _evaluate_momentum(
-    visible: tuple[ValidatedPricePoint, ...], rule: StrategyRule
+    points: tuple[ValidatedPricePoint, ...], index: int, rule: StrategyRule
 ) -> SignalDirection | None:
-    current_price = visible[-1].price
-    past_price = visible[-1 - rule.lookback].price
+    current_price = points[index].price
+    past_price = points[index - rule.lookback].price
     if past_price <= 0:
         raise DataQualityError("preço histórico não positivo impede avaliar a regra")
 
@@ -217,18 +217,19 @@ def _evaluate_momentum(
 
 
 def _evaluate_streak(
-    visible: tuple[ValidatedPricePoint, ...], rule: StrategyRule
+    points: tuple[ValidatedPricePoint, ...], index: int, rule: StrategyRule
 ) -> SignalDirection | None:
-    last_color = candle_color(visible, len(visible) - 1)
+    last_color = candle_color(points, index)
     if last_color is CandleColor.DOJI:
         return None
 
     run = 0
-    for offset in range(len(visible) - 1, -1, -1):
-        if candle_color(visible, offset) is last_color:
-            run += 1
-            continue
-        break
+    # Percorre para trás apenas o necessário: uma vela além da sequência
+    # exigida já é suficiente para decidir.
+    for offset in range(index, max(index - rule.streak_length, -1), -1):
+        if candle_color(points, offset) is not last_color:
+            break
+        run += 1
 
     if run < rule.streak_length:
         return None
@@ -236,28 +237,32 @@ def _evaluate_streak(
 
 
 def _evaluate_alternation(
-    visible: tuple[ValidatedPricePoint, ...], rule: StrategyRule
+    points: tuple[ValidatedPricePoint, ...], index: int, rule: StrategyRule
 ) -> SignalDirection | None:
-    colors = [
-        candle_color(visible, index)
-        for index in range(len(visible) - rule.lookback, len(visible))
-    ]
-    if any(color is CandleColor.DOJI for color in colors):
+    start = index - rule.lookback + 1
+    if start < 0:
         return None
-    for previous, current in zip(colors, colors[1:]):
-        if previous is current:
+
+    previous: CandleColor | None = None
+    last = CandleColor.DOJI
+    for offset in range(start, index + 1):
+        color = candle_color(points, offset)
+        if color is CandleColor.DOJI:
             return None
+        if previous is not None and previous is color:
+            return None
+        previous = color
+        last = color
 
     # Em alternância estrita, a continuação do padrão inverte a última cor.
-    last = colors[-1]
     expected = CandleColor.DOWN if last is CandleColor.UP else CandleColor.UP
     return _direction_from_color(expected, rule.mode)
 
 
 def _evaluate_body_ratio(
-    visible: tuple[ValidatedPricePoint, ...], rule: StrategyRule
+    points: tuple[ValidatedPricePoint, ...], index: int, rule: StrategyRule
 ) -> SignalDirection | None:
-    point = visible[-1]
+    point = points[index]
     if point.open is None or point.high is None or point.low is None:
         return None
     candle_range = point.high - point.low
@@ -266,7 +271,7 @@ def _evaluate_body_ratio(
     body = abs(point.price - point.open)
     if body / candle_range < rule.threshold:
         return None
-    return _direction_from_color(candle_color(visible, len(visible) - 1), rule.mode)
+    return _direction_from_color(candle_color(points, index), rule.mode)
 
 
 _EVALUATORS = {
@@ -284,19 +289,25 @@ def evaluate_at(
 ) -> SignalDirection | None:
     """Avalia a regra no instante `index` usando somente dados até `index`.
 
-    A fatia é explicitamente truncada em `index + 1`: qualquer tentativa de ler
-    o futuro resultaria em IndexError, não em um resultado silencioso.
+    Os avaliadores acessam exclusivamente deslocamentos negativos a partir de
+    `index` — nunca `index + k`. Essa propriedade é verificada de duas formas:
+
+    - por teste unitário, comparando com a série truncada no ponto de decisão;
+    - em tempo de execução, pelo Adversarial Agent, que reexecuta cada sinal
+      sobre a série truncada e reprova a estratégia se houver divergência.
+
+    A versão anterior garantia isso fatiando a série a cada índice, o que
+    custava uma cópia O(n) por decisão e tornava o backtest O(n²).
     """
     if index < 0 or index >= len(points):
         raise IndexError("index fora da série")
 
-    visible = points[: index + 1]
-    if len(visible) < rule.minimum_history:
+    if index + 1 < rule.minimum_history:
         return None
-    if not _within_hour_window(visible[-1].timestamp, rule.hour_window):
+    if not _within_hour_window(points[index].timestamp, rule.hour_window):
         return None
 
-    return _EVALUATORS[rule.signal_source](visible, rule)
+    return _EVALUATORS[rule.signal_source](points, index, rule)
 
 
 def generate_signals(

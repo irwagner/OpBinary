@@ -172,3 +172,50 @@ class MonteCarloTests(unittest.TestCase):
                 payout=0.87,
                 risk_per_trade=0.02,
             )
+
+
+class FractionalBettingScaleInvarianceTests(unittest.TestCase):
+    """Aposta fracionária torna drawdown relativo e ruína independentes do capital.
+
+    Isso justifica calcular Monte Carlo uma única vez por estratégia em vez de
+    uma vez por cenário de capital.
+    """
+
+    def setUp(self) -> None:
+        points = mixed_walk_series(150)
+        rule = StrategyRule(lookback=2, threshold=0.0005, expiry_periods=1)
+        self.outcomes = run_backtest(
+            points, rule, payout=0.89, capital_scenarios=(100,), risk_per_trade=0.02
+        ).outcomes
+
+    def test_ruin_probability_is_scale_invariant(self) -> None:
+        base = {
+            "runs": 60,
+            "payout": 0.89,
+            "risk_per_trade": 0.02,
+            "seed": 99,
+        }
+        pequeno = run_monte_carlo(self.outcomes, initial_capital=100.0, **base)
+        grande = run_monte_carlo(self.outcomes, initial_capital=1000.0, **base)
+
+        self.assertEqual(pequeno.ruin_probability, grande.ruin_probability)
+        self.assertAlmostEqual(
+            pequeno.mean_max_drawdown, grande.mean_max_drawdown, places=9
+        )
+        self.assertAlmostEqual(
+            pequeno.worst_max_drawdown, grande.worst_max_drawdown, places=9
+        )
+
+    def test_final_capital_scales_proportionally(self) -> None:
+        base = {
+            "runs": 60,
+            "payout": 0.89,
+            "risk_per_trade": 0.02,
+            "seed": 99,
+        }
+        pequeno = run_monte_carlo(self.outcomes, initial_capital=100.0, **base)
+        grande = run_monte_carlo(self.outcomes, initial_capital=1000.0, **base)
+
+        self.assertAlmostEqual(
+            pequeno.mean_final_capital * 10.0, grande.mean_final_capital, places=6
+        )

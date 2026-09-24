@@ -104,7 +104,32 @@ class ResearchRuntime:
             )
         self._supervisor_actor = Actor("supervisor-runtime", ActorRole.SUPERVISOR)
         self._validator_actor = Actor("validator-runtime", ActorRole.VALIDATOR)
-        self._tried_signatures: set[RuleSignature] = set()
+        # Assinaturas já testadas, ESCOPADAS POR DATASET: a varredura de um
+        # ativo não marca o espaço de busca de outro como testado. Preenchido
+        # sob demanda a partir do banco (retoma campanha interrompida) e
+        # cacheado por dataset_id.
+        self._tried_by_dataset: dict[str, set[RuleSignature]] = {}
+        self._active_dataset_id: str | None = None
+
+    def _tried_signatures_for(self, dataset_id: str) -> set[RuleSignature]:
+        """Set de assinaturas já testadas para um dataset, com cache."""
+        cached = self._tried_by_dataset.get(dataset_id)
+        if cached is None:
+            cached = _load_tried_signatures(self._store, dataset_id)
+            self._tried_by_dataset[dataset_id] = cached
+        return cached
+
+    @property
+    def tried_count(self) -> int:
+        """Combinações já experimentadas no dataset ativo da última campanha."""
+        if self._active_dataset_id is None:
+            return 0
+        return len(self._tried_signatures_for(self._active_dataset_id))
+
+    @property
+    def search_space_size(self) -> int:
+        """Tamanho total do espaço de busca declarado."""
+        return self._researcher.search_space_size
 
     @property
     def system_status(self) -> SystemStatus:
@@ -164,6 +189,10 @@ class ResearchRuntime:
             payout=payout,
         )
 
+        # Escopo de "já testado" é o dataset atual (não global).
+        self._active_dataset_id = dataset.dataset_id
+        tried = self._tried_signatures_for(dataset.dataset_id)
+
         outcome = CycleOutcome(cycle_index=cycle_index, readiness=ReadinessState.READY)
         errors: list[str] = []
         reports: list[str] = []
@@ -172,7 +201,7 @@ class ResearchRuntime:
             dataset.asset,
             dataset.timeframe,
             limit=self._config.research.max_experiments_per_cycle,
-            exclude=frozenset(self._tried_signatures),
+            exclude=frozenset(tried),
         )
 
         broker_report = self._broker_risk.evaluate(dataset.broker)
@@ -218,8 +247,30 @@ class ResearchRuntime:
         *,
         require_broker_risk: bool,
     ) -> None:
-        self._tried_signatures.add(signature_of(dict(hypothesis.parameters)))
         experiment_id = self._experiment_ids.next_id()
+
+        # Gate de status ANTES de qualquer gravação: uma hipótese negada por
+        # status do sistema (ex.: STOPPED) NÃO deve contar como testada nem
+        # gerar experimento — caso contrário o tried_count é envenenado e o
+        # espaço de busca aparece como varrido sem nada ter sido avaliado.
+        permission = self._supervisor.request_permission(
+            PermissionRequest(
+                agent_name="quant",
+                task_type=TaskType.FORMALIZE_STRATEGY,
+                strategy_id=hypothesis.strategy_id,
+                experiment_id=experiment_id,
+            ),
+            system_status=self.system_status,
+            strategy_status=StrategyStatus.IDEA,
+        )
+        if not permission.granted:
+            errors.append(f"{hypothesis.strategy_id}: {permission.reason}")
+            return
+
+        # Só a partir daqui a hipótese conta como efetivamente testada.
+        self._tried_signatures_for(dataset.dataset_id).add(
+            signature_of(dict(hypothesis.parameters))
+        )
 
         # Experimento é registrado antes de qualquer resultado e nunca
         # sobrescrito depois (MASTER_SPEC seção 21).
@@ -237,20 +288,6 @@ class ResearchRuntime:
         self._strategy_states.initialize(
             hypothesis.strategy_id, actor=self._supervisor_actor, reason="hipótese registrada"
         )
-
-        permission = self._supervisor.request_permission(
-            PermissionRequest(
-                agent_name="quant",
-                task_type=TaskType.FORMALIZE_STRATEGY,
-                strategy_id=hypothesis.strategy_id,
-                experiment_id=experiment_id,
-            ),
-            system_status=self.system_status,
-            strategy_status=StrategyStatus.IDEA,
-        )
-        if not permission.granted:
-            errors.append(f"{hypothesis.strategy_id}: {permission.reason}")
-            return
 
         strategy = self._quant.formalize(hypothesis)
         if not strategy.reproducible or strategy.rule is None:
@@ -326,7 +363,9 @@ class ResearchRuntime:
             broker_report,
             self._config.validation,
             self._config.risk,
-            expectancy_margin=required_expectancy_margin(len(self._tried_signatures)),
+            expectancy_margin=required_expectancy_margin(
+                len(self._tried_signatures_for(dataset.dataset_id))
+            ),
         )
         decision = self._validator.decide(
             hypothesis.strategy_id,
@@ -361,6 +400,25 @@ class ResearchRuntime:
             self._system_state.transition(
                 SystemStatus.STOPPED, reason, actor=self._supervisor_actor
             )
+
+
+def _load_tried_signatures(
+    store: SQLiteStore, dataset_prefix: str | None = None
+) -> set[RuleSignature]:
+    """Reconstrói as assinaturas já testadas a partir dos experimentos salvos.
+
+    Quando `dataset_prefix` é dado, considera apenas os experimentos daquele
+    dataset — a varredura de um ativo não deve marcar o espaço de busca de
+    outro como já testado (assinatura de regra é a mesma entre ativos).
+    """
+    signatures: set[RuleSignature] = set()
+    for parameters in store.load_experiment_parameters(dataset_prefix):
+        try:
+            signatures.add(signature_of(dict(parameters)))
+        except (KeyError, TypeError, ValueError):
+            # Experimento de versão anterior, com parâmetros incompatíveis.
+            continue
+    return signatures
 
 
 def broker_risk_blocks_demo(status: Verdict) -> bool:
